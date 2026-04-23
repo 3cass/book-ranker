@@ -218,13 +218,13 @@
     <p class="onboarding-sub" style="margin-top:10px;">Settle every "which did I actually prefer?" debate through head-to-head battles.</p>
   </div>
   <div style="display:flex;flex-direction:column;gap:10px;width:100%;">
-    <div class="step-card"><div class="step-num">01</div><div class="step-content"><h3>Import your StoryGraph library</h3><p>Export from StoryGraph (Profile → Export → CSV) and upload here to seed your read books.</p></div></div>
+    <div class="step-card"><div class="step-num">01</div><div class="step-content"><h3>Import your reading history</h3><p>Upload a <strong>StoryGraph</strong> or <strong>Goodreads</strong> CSV export to seed your read books automatically.</p></div></div>
     <div class="step-card"><div class="step-num">02</div><div class="step-content"><h3>Battle books head-to-head</h3><p>Pick which you preferred. Elo scores update after each choice.</p></div></div>
     <div class="step-card"><div class="step-num">03</div><div class="step-content"><h3>Add new books as you finish them</h3><p>Search by title to add a book and run a quick placement gauntlet.</p></div></div>
   </div>
   <div class="upload-zone" id="upload-zone">
     <input type="file" accept=".csv" id="csv-input" onchange="handleCSV(this.files[0])">
-    <div class="upload-label"><strong>Upload StoryGraph CSV</strong>tap to choose file</div>
+    <div class="upload-label"><strong>Upload StoryGraph or Goodreads CSV</strong><span style="display:block;margin-top:2px;">tap to choose file</span></div>
   </div>
   <div id="upload-status" style="font-size:0.65rem;color:var(--muted);text-align:center;display:none;"></div>
   <button class="primary-btn" id="import-btn" disabled onclick="doImport(false)">Import & Start Ranking</button>
@@ -531,28 +531,49 @@ function parseCSVRow(line) {
 
 function parseCSV(text) {
   const lines = text.split('\n');
-  const header = lines[0].split(',');
-  const titleIdx = header.indexOf('Title'), authorIdx = header.indexOf('Authors');
-  const statusIdx = header.indexOf('Read Status'), ratingIdx = header.indexOf('Star Rating');
+  const header = parseCSVRow(lines[0]); // use proper parser for quoted headers too
+  const isGoodreads = header.includes('Exclusive Shelf');
+
+  let titleIdx, authorIdx, statusIdx, ratingIdx;
+  if (isGoodreads) {
+    titleIdx = header.indexOf('Title');
+    authorIdx = header.indexOf('Author');
+    statusIdx = header.indexOf('Exclusive Shelf');
+    ratingIdx = header.indexOf('My Rating');
+  } else {
+    // StoryGraph
+    titleIdx = header.indexOf('Title');
+    authorIdx = header.indexOf('Authors');
+    statusIdx = header.indexOf('Read Status');
+    ratingIdx = header.indexOf('Star Rating');
+  }
+
   const result = [];
   for (let i = 1; i < lines.length; i++) {
     const row = parseCSVRow(lines[i]);
-    if (!row || row[statusIdx]?.trim() !== 'read') continue;
+    if (!row) continue;
+    const status = row[statusIdx]?.trim();
+    const isRead = isGoodreads ? status === 'read' : status === 'read';
+    if (!isRead) continue;
     const title = row[titleIdx]?.trim();
     if (!title) continue;
-    result.push({ title, author: row[authorIdx]?.trim() || 'Unknown', storygraph_rating: parseFloat(row[ratingIdx]) || null });
+    let rating = parseFloat(row[ratingIdx]) || null;
+    // Goodreads uses 1-5 integers, StoryGraph uses 0.5-5 with halves — both fine as-is
+    if (rating === 0) rating = null; // Goodreads uses 0 for unrated
+    result.push({ title, author: row[authorIdx]?.trim() || 'Unknown', storygraph_rating: rating });
   }
-  return result;
+  return { books: result, source: isGoodreads ? 'Goodreads' : 'StoryGraph' };
 }
 
 function handleCSV(file) {
   if (!file) return;
   const reader = new FileReader();
   reader.onload = e => {
-    csvBooks = parseCSV(e.target.result);
+    const parsed = parseCSV(e.target.result);
+    csvBooks = parsed.books;
     const status = document.getElementById('upload-status');
     status.style.display = 'block';
-    status.textContent = `Found ${csvBooks.length} read books`;
+    status.textContent = `Found ${csvBooks.length} read books from ${parsed.source}`;
     document.getElementById('import-btn').disabled = csvBooks.length === 0;
   };
   reader.readAsText(file);
@@ -587,9 +608,10 @@ function handleReimportCSV(file) {
   if (!file) return;
   const reader = new FileReader();
   reader.onload = e => {
-    reimportBooks = parseCSV(e.target.result);
+    const parsed = parseCSV(e.target.result);
+    reimportBooks = parsed.books;
     document.getElementById('reimport-label').textContent = file.name;
-    document.getElementById('reimport-count').textContent = ` — ${reimportBooks.length} read books found`;
+    document.getElementById('reimport-count').textContent = ` — ${reimportBooks.length} read books found (${parsed.source})`;
     document.getElementById('reimport-add-btn').disabled = false;
     document.getElementById('reimport-wipe-btn').disabled = false;
   };
