@@ -1391,6 +1391,18 @@ async function addBookToLibrary(bookData) {
     showToast('Already in your library'); return;
   }
 
+  // Ensure we have a valid session
+  if (!userId) {
+    const { data: sessionData } = await sb.auth.getSession();
+    if (sessionData?.session) {
+      userId = sessionData.session.user.id;
+    } else {
+      const { data: anonData, error: anonError } = await sb.auth.signInAnonymously();
+      if (anonError) { showToast('Auth error: ' + anonError.message); return; }
+      userId = anonData.user.id;
+    }
+  }
+
   const newBook = {
     user_id: userId,
     title: bookData.title,
@@ -1399,14 +1411,14 @@ async function addBookToLibrary(bookData) {
     cover_url: bookData.cover_url || null,
     elo: 1500, battles: 0, wins: 0, streak: 0,
     placement_battles: 0,
-    is_placed: false  // triggers placement gauntlet
+    is_placed: false
   };
 
   // If no placed books yet, skip gauntlet
   if (books.filter(b => b.is_placed).length < 2) newBook.is_placed = true;
 
   const { data, error } = await sb.from('books').insert(newBook).select().single();
-  if (error) { showToast('Error adding book'); console.error(error); return; }
+  if (error) { showToast(error.message || error.code || 'DB error'); console.error(error); return; }
 
   books.push(data);
   showToast(`"${bookData.title}" added`);
@@ -1414,7 +1426,6 @@ async function addBookToLibrary(bookData) {
   updateStats();
 
   if (!data.is_placed) {
-    // Ask if they want to place now
     startNextPlacement();
   } else {
     nextMatchup();
@@ -1529,6 +1540,28 @@ if (zone) {
   zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
   zone.addEventListener('drop', e => { e.preventDefault(); zone.classList.remove('dragover'); handleCSV(e.dataTransfer.files[0]); });
 }
+
+// ── DEBUG ────────────────────────────────────────────────────────────
+async function debugInfo() {
+  const { data: { session } } = await sb.auth.getSession();
+  const info = {
+    userId,
+    sessionExists: !!session,
+    sessionUserId: session?.user?.id || null,
+    booksCount: books.length
+  };
+  showToast(JSON.stringify(info));
+  console.log('DEBUG:', info);
+  // Also show on screen
+  const div = document.createElement('div');
+  div.style.cssText = 'position:fixed;top:60px;left:10px;right:10px;background:#fff;border:1px solid red;padding:12px;font-size:11px;z-index:9999;word-break:break-all;';
+  div.textContent = JSON.stringify(info, null, 2);
+  div.onclick = () => div.remove();
+  document.body.appendChild(div);
+}
+
+// Expose debug globally
+window.debugInfo = debugInfo;
 
 // ── START ─────────────────────────────────────────────────────────────
 init();
