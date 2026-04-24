@@ -499,7 +499,7 @@ async function fetchCoverUrl(book) {
         img = raw
           .replace('http:', 'https:')
           .replace('&edge=curl', '')
-          .replace('zoom=1', 'zoom=2'); // zoom=2 gives ~200px, cleaner than large scans
+          ; // use default zoom=1 (128px, clean publisher thumbnail)
         break;
       }
     }
