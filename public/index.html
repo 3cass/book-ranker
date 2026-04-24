@@ -60,7 +60,7 @@
   .nav-btn.active { background:var(--ink); color:var(--paper); border-color:var(--ink); }
 
   /* BATTLE */
-  #battle-view { flex:1; display:none; flex-direction:column; align-items:center; justify-content:center; padding:24px 16px; gap:16px; }
+  #battle-view { flex:1; display:none; flex-direction:column; align-items:center; justify-content:center; padding:8px 16px; gap:10px; }
   .battle-header { text-align:center; }
   .battle-prompt { font-family:'Playfair Display',serif; font-size:1rem; font-style:italic; color:var(--muted); margin-bottom:4px; }
   .battle-counter { font-size:0.62rem; letter-spacing:0.1em; text-transform:uppercase; color:var(--muted); }
@@ -493,9 +493,15 @@ async function fetchCoverUrl(book) {
     let img = null;
     for (const item of (data.items || [])) {
       const links = item.volumeInfo?.imageLinks;
-      // Prefer larger sizes, fall back to thumbnail
-      const raw = links?.large || links?.medium || links?.small || links?.thumbnail;
-      if (raw) { img = raw.replace('http:', 'https:').replace('&edge=curl', ''); break; }
+      // Use thumbnail with zoom=1 for clean publisher images at decent resolution
+      const raw = links?.thumbnail || links?.smallThumbnail;
+      if (raw) {
+        img = raw
+          .replace('http:', 'https:')
+          .replace('&edge=curl', '')
+          .replace('zoom=1', 'zoom=2'); // zoom=2 gives ~200px, cleaner than large scans
+        break;
+      }
     }
     if (img) {
       coverCache[cacheKey] = img;
