@@ -480,25 +480,52 @@ function showScreen(name) {
 async function fetchCoverUrl(book) {
   if (book.cover_url) return book.cover_url;
   const cacheKey = book.title + '|' + book.author;
-  if (coverCache[cacheKey] !== undefined) return coverCache[cacheKey];
+  // Only use cache if it's a hit — don't cache misses, so we retry on next render
+  if (coverCache[cacheKey]) return coverCache[cacheKey];
+
+  // 1. Try Google Books — request larger zoom image, not just thumbnail
   try {
-    const q = encodeURIComponent(`${book.title} ${book.author}`);
-    const url = `https://www.googleapis.com/books/v1/volumes?q=${q}&maxResults=1${GOOGLE_BOOKS_KEY ? '&key='+GOOGLE_BOOKS_KEY : ''}`;
+    const q = encodeURIComponent(`intitle:${book.title} inauthor:${book.author}`);
+    const url = `https://www.googleapis.com/books/v1/volumes?q=${q}&maxResults=3&printType=books${GOOGLE_BOOKS_KEY ? '&key='+GOOGLE_BOOKS_KEY : ''}`;
     const res = await fetch(url);
     const data = await res.json();
-    const img = data.items?.[0]?.volumeInfo?.imageLinks?.thumbnail?.replace('http:', 'https:') || null;
-    coverCache[cacheKey] = img;
-    // Persist to DB if found
-    if (img && book.id) {
-      sb.from('books').update({ cover_url: img }).eq('id', book.id);
-      const b = books.find(b => b.id === book.id);
-      if (b) b.cover_url = img;
+    // Try each result until we find one with a cover image
+    let img = null;
+    for (const item of (data.items || [])) {
+      const links = item.volumeInfo?.imageLinks;
+      // Prefer larger sizes, fall back to thumbnail
+      const raw = links?.large || links?.medium || links?.small || links?.thumbnail;
+      if (raw) { img = raw.replace('http:', 'https:').replace('&edge=curl', ''); break; }
     }
-    return img;
-  } catch(e) {
-    coverCache[cacheKey] = null;
-    return null;
-  }
+    if (img) {
+      coverCache[cacheKey] = img;
+      persistCover(book, img);
+      return img;
+    }
+  } catch(e) { /* fall through to Open Library */ }
+
+  // 2. Fallback: Open Library covers API
+  try {
+    const q = encodeURIComponent(`${book.title} ${book.author}`);
+    const search = await fetch(`https://openlibrary.org/search.json?q=${q}&fields=cover_i&limit=3`);
+    const data = await search.json();
+    const coverId = data.docs?.find(d => d.cover_i)?.cover_i;
+    if (coverId) {
+      const img = `https://covers.openlibrary.org/b/id/${coverId}-M.jpg`;
+      coverCache[cacheKey] = img;
+      persistCover(book, img);
+      return img;
+    }
+  } catch(e) { /* give up */ }
+
+  return null;
+}
+
+function persistCover(book, url) {
+  if (!book.id) return;
+  sb.from('books').update({ cover_url: url }).eq('id', book.id);
+  const b = books.find(b => b.id === book.id);
+  if (b) b.cover_url = url;
 }
 
 function renderCoverEl(containerId, book) {
@@ -653,19 +680,99 @@ function applyElo(winnerId, loserId) {
 }
 
 // ── MATCHMAKING ───────────────────────────────────────────────────────
+// Track recent pairs to avoid rematches
+const recentPairs = new Set();
+const RECENT_PAIR_MEMORY = 20; // remember last 20 matchups
+let recentPairQueue = [];
+
+function recordPair(idA, idB) {
+  const key = [idA, idB].sort().join('|');
+  if (!recentPairs.has(key)) {
+    recentPairs.add(key);
+    recentPairQueue.push(key);
+    if (recentPairQueue.length > RECENT_PAIR_MEMORY) {
+      recentPairs.delete(recentPairQueue.shift());
+    }
+  }
+}
+
+function wasRecentPair(idA, idB) {
+  return recentPairs.has([idA, idB].sort().join('|'));
+}
+
+function bookWeight(book, minElo, eloRange, maxBattles) {
+  // Battle-count weight: books with fewer battles surface more (0.4 - 1.0)
+  const battleW = 1 - (book.battles / (maxBattles + 1)) * 0.6;
+
+  // Elo weight: bottom quartile gets downweighted, unless they have few battles
+  // (few-battle books stay upweighted regardless so misplaced books can climb)
+  let eloW = 1.0;
+  if (eloRange > 0) {
+    const pct = (book.elo - minElo) / eloRange; // 0 = lowest, 1 = highest
+    if (pct < 0.25 && book.battles >= 5) {
+      eloW = 0.5; // bottom quartile, well-battled: reduce
+    } else if (pct < 0.5 && book.battles >= 8) {
+      eloW = 0.8; // lower-mid, well-battled: slight reduce
+    }
+  }
+
+  return battleW * eloW;
+}
+
+function weightedPick(pool, weights, excludeId) {
+  const eligible = pool.filter((b, i) => b.id !== excludeId && weights[i] > 0);
+  const eligibleWeights = pool.map((b, i) => b.id !== excludeId ? weights[i] : 0);
+  const total = eligibleWeights.reduce((s, w) => s + w, 0);
+  if (total === 0) return eligible[Math.floor(Math.random() * eligible.length)];
+  let r = Math.random() * total;
+  for (let i = 0; i < pool.length; i++) {
+    if (pool[i].id === excludeId) continue;
+    r -= eligibleWeights[i];
+    if (r <= 0) return pool[i];
+  }
+  return eligible[eligible.length - 1];
+}
+
 function pickMatchup() {
   const pool = books.filter(b => b.is_placed);
   if (pool.length < 2) return [null, null];
-  const maxB = Math.max(...pool.map(b => b.battles), 1);
-  const weights = pool.map(b => 1-(b.battles/(maxB+1))*0.6);
-  const totalW = weights.reduce((s,w)=>s+w,0);
-  let r = Math.random()*totalW, idxA = 0;
-  for (let i = 0; i < weights.length; i++) { r -= weights[i]; if (r <= 0) { idxA=i; break; } }
+
+  const maxBattles = Math.max(...pool.map(b => b.battles), 1);
+  const minElo = Math.min(...pool.map(b => b.elo));
+  const maxElo = Math.max(...pool.map(b => b.elo));
+  const eloRange = maxElo - minElo || 1;
+
+  const weights = pool.map(b => bookWeight(b, minElo, eloRange, maxBattles));
+
+  // Pick book A by weight
+  const totalW = weights.reduce((s, w) => s + w, 0);
+  let r = Math.random() * totalW, idxA = 0;
+  for (let i = 0; i < weights.length; i++) { r -= weights[i]; if (r <= 0) { idxA = i; break; } }
   const bookA = pool[idxA];
-  const band = 200+(comparisons<200?600:0);
-  const candidates = pool.filter(b => b.id!==bookA.id && Math.abs(b.elo-bookA.elo)<band);
-  const p2 = candidates.length>3 ? candidates : pool.filter(b=>b.id!==bookA.id);
-  return [bookA, p2[Math.floor(Math.random()*p2.length)]];
+
+  // Pick book B: similar Elo band + also weighted + avoid recent rematches
+  const band = 200 + (comparisons < 200 ? 600 : 0);
+  let candidates = pool.filter(b =>
+    b.id !== bookA.id &&
+    Math.abs(b.elo - bookA.elo) < band &&
+    !wasRecentPair(bookA.id, b.id)
+  );
+
+  // Fall back progressively: drop rematch filter, then drop band
+  if (candidates.length < 2) candidates = pool.filter(b => b.id !== bookA.id && Math.abs(b.elo - bookA.elo) < band);
+  if (candidates.length < 2) candidates = pool.filter(b => b.id !== bookA.id);
+
+  // Weight book B candidates too (battle-count + elo, same logic)
+  const candWeights = candidates.map(b => bookWeight(b, minElo, eloRange, maxBattles));
+  const candTotal = candWeights.reduce((s, w) => s + w, 0);
+  let r2 = Math.random() * candTotal, bookB = candidates[0];
+  for (let i = 0; i < candidates.length; i++) {
+    r2 -= candWeights[i];
+    if (r2 <= 0) { bookB = candidates[i]; break; }
+  }
+
+  recordPair(bookA.id, bookB.id);
+  return [bookA, bookB];
 }
 
 function isElite(a, b) {
