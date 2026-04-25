@@ -60,7 +60,7 @@
   .nav-btn.active { background:var(--ink); color:var(--paper); border-color:var(--ink); }
 
   /* BATTLE */
-  #battle-view { flex:1; display:none; flex-direction:column; align-items:center; justify-content:center; padding:8px 16px; gap:10px; }
+  #battle-view { flex:1; display:none; flex-direction:column; align-items:center; justify-content:flex-start; padding:10px 16px 6px; gap:8px; }
   .battle-header { text-align:center; }
   .battle-prompt { font-family:'Playfair Display',serif; font-size:1rem; font-style:italic; color:var(--muted); margin-bottom:4px; }
   .battle-counter { font-size:0.62rem; letter-spacing:0.1em; text-transform:uppercase; color:var(--muted); }
@@ -85,8 +85,9 @@
     0%  { background:#fff; border-color:var(--border); transform:translateY(0) scale(1); box-shadow:none; }
     30% { background:#fff8e8; border-color:var(--gold); transform:translateY(-6px) scale(1.025); box-shadow:0 12px 32px rgba(184,134,11,0.22); }
     70% { background:#fffbf0; border-color:var(--accent); transform:translateY(-3px) scale(1.012); }
-    100%{ background:#fff; border-color:var(--border); transform:translateY(0) scale(1); }
+    100%{ background:#fff; border-color:var(--border); transform:translateY(0) scale(1); box-shadow:none; }
   }
+  .book-card.winner, .book-card.loser { border-color:var(--border) !important; }
   @keyframes flash-lose {
     0%  { background:#fff; opacity:1; transform:scale(1); filter:none; }
     30% { background:#f0ece4; opacity:0.55; transform:scale(0.97); filter:grayscale(40%); }
@@ -102,9 +103,9 @@
   .book-author { font-size:0.65rem; color:var(--muted); letter-spacing:0.03em; }
   .book-elo { font-size:0.6rem; color:var(--paper-dark); letter-spacing:0.06em; margin-top:auto; padding-top:8px; }
 
-  .battle-arena.elite .book-card { border-color:var(--gold); box-shadow:0 0 0 1px rgba(184,134,11,0.15),inset 0 0 40px rgba(184,134,11,0.04); }
-  .battle-arena.elite .vs-divider { color:var(--gold); opacity:1; font-style:normal; font-size:0.62rem; letter-spacing:0.12em; text-transform:uppercase; }
-  .elite-badge { font-size:0.56rem; letter-spacing:0.12em; text-transform:uppercase; color:var(--gold); text-align:center; margin-top:-4px; margin-bottom:-4px; opacity:0; transition:opacity 0.3s; height:14px; }
+  .battle-arena.elite .book-card { border-color:var(--gold); border-width:2px; box-shadow:0 0 0 1px rgba(184,134,11,0.2),inset 0 0 40px rgba(184,134,11,0.04); }
+  .battle-arena.elite .vs-divider { color:var(--gold); opacity:1; font-style:normal; font-size:0.75rem; font-weight:700; letter-spacing:0.12em; text-transform:uppercase; }
+  .elite-badge { font-size:0.7rem; letter-spacing:0.1em; text-transform:uppercase; color:var(--gold); text-align:center; margin-top:-2px; margin-bottom:-2px; opacity:0; transition:opacity 0.3s; height:18px; font-weight:600; }
   .elite-badge.show { opacity:1; }
 
   .vs-divider { display:flex; align-items:center; justify-content:center; width:32px; flex-shrink:0; font-family:'Playfair Display',serif; font-style:italic; font-size:0.9rem; color:var(--muted); opacity:0.5; align-self:center; }
@@ -181,6 +182,8 @@
   .star-rating { font-size:0.56rem; color:var(--gold); letter-spacing:1px; }
   .battles-count { font-size:0.56rem; color:var(--paper-dark); }
   .confidence-bar { height:2px; background:var(--paper-dark); margin-top:3px; width:48px; }
+  .gauntlet-btn { font-size:0.7rem; background:none; border:none; cursor:pointer; opacity:0.3; transition:opacity 0.15s; padding:2px 4px; line-height:1; }
+  .gauntlet-btn:hover { opacity:1; }
   .confidence-fill { height:100%; background:var(--accent-light); }
   .unrated-chip { font-size:0.56rem; padding:2px 5px; background:var(--paper-mid); color:var(--muted); }
 
@@ -473,7 +476,7 @@ function showScreen(name) {
   document.getElementById('app').style.display = 'none';
   if (name === 'onboarding') document.getElementById('onboarding-screen').style.display = 'flex';
   else if (name === 'placement') document.getElementById('placement-screen').style.display = 'flex';
-  else if (name === 'app') { document.getElementById('app').style.display = 'flex'; updateStats(); }
+  else if (name === 'app') { document.getElementById('app').style.display = 'flex'; updateStats(); showView('battle'); }
 }
 
 // ── COVER FETCHING ─────────────────────────────────────────────────────
@@ -1256,10 +1259,24 @@ function renderRankings() {
         <div class="star-rating">${starsHtml(book.storygraph_rating)}</div>
         <div class="battles-count">${book.battles} battle${book.battles!==1?'s':''}</div>
         <div class="confidence-bar"><div class="confidence-fill" style="width:${Math.min(100,(book.battles/10)*100)}%"></div></div>
+        <button class="gauntlet-btn" onclick="runGauntlet('${book.id}')" title="Run gauntlet">⚔</button>
       </div>
     </div>`;
   }).join('');
   document.getElementById('rankings-subtitle').textContent=`${filtered.length} books · sorted by elo`;
+}
+
+function runGauntlet(bookId) {
+  const book = books.find(b => b.id === bookId);
+  if (!book) return;
+  placingBook = book;
+  placementBattlesDone = 0;
+  const placed = books.filter(b => b.is_placed && b.id !== book.id);
+  placementOpponents = selectPlacementOpponents(placed, PLACEMENT_BATTLES);
+  showScreen('placement');
+  document.getElementById('placement-book-name').textContent = book.title;
+  renderPlacementDots();
+  nextPlacementBattle();
 }
 
 function exportCSV() {
