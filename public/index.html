@@ -477,61 +477,117 @@ function showScreen(name) {
 }
 
 // ── COVER FETCHING ─────────────────────────────────────────────────────
-async function fetchCoverUrl(book) {
-  if (book.cover_url) return book.cover_url;
-  const cacheKey = book.title + '|' + book.author;
-  // Only use cache if it's a hit — don't cache misses, so we retry on next render
-  if (coverCache[cacheKey]) return coverCache[cacheKey];
+// ── CANONICAL BOOKS ───────────────────────────────────────────────────
+function canonicalKey(title, author) {
+  return (title.toLowerCase() + '|||' + author.toLowerCase());
+}
 
-  // 1. Try Google Books — request larger zoom image, not just thumbnail
+// Fetch or create canonical record for a single book, returns canonical row
+async function resolveCanonical(title, author) {
+  const key = canonicalKey(title, author);
+
+  // Check local cache first
+  if (coverCache[key] !== undefined) return coverCache[key];
+
+  // Check DB
+  const { data: existing } = await sb.from('canonical_books')
+    .select('id, cover_url')
+    .eq('title_author_key', key)
+    .maybeSingle();
+
+  if (existing) {
+    coverCache[key] = existing;
+    return existing;
+  }
+
+  // Not found — insert new canonical row (cover fetched separately)
+  const { data: inserted, error } = await sb.from('canonical_books')
+    .insert({ title, author })
+    .select('id, cover_url')
+    .single();
+
+  if (error) {
+    // Race condition — another user inserted at same time, fetch it
+    const { data: raced } = await sb.from('canonical_books')
+      .select('id, cover_url')
+      .eq('title_author_key', key)
+      .maybeSingle();
+    if (raced) { coverCache[key] = raced; return raced; }
+    return null;
+  }
+
+  coverCache[key] = inserted;
+  return inserted;
+}
+
+// Fetch cover from APIs and save to canonical row
+async function fetchAndSaveCover(canonicalId, title, author) {
+  let img = null;
+
+  // 1. Google Books
   try {
-    const q = encodeURIComponent(`intitle:${book.title} inauthor:${book.author}`);
+    const q = encodeURIComponent(`intitle:${title} inauthor:${author}`);
     const url = `https://www.googleapis.com/books/v1/volumes?q=${q}&maxResults=3&printType=books${GOOGLE_BOOKS_KEY ? '&key='+GOOGLE_BOOKS_KEY : ''}`;
     const res = await fetch(url);
     const data = await res.json();
-    // Try each result until we find one with a cover image
-    let img = null;
     for (const item of (data.items || [])) {
       const links = item.volumeInfo?.imageLinks;
-      // Use thumbnail with zoom=1 for clean publisher images at decent resolution
       const raw = links?.thumbnail || links?.smallThumbnail;
-      if (raw) {
-        img = raw
-          .replace('http:', 'https:')
-          .replace('&edge=curl', '')
-          ; // use default zoom=1 (128px, clean publisher thumbnail)
-        break;
-      }
+      if (raw) { img = raw.replace('http:', 'https:').replace('&edge=curl', ''); break; }
     }
-    if (img) {
-      coverCache[cacheKey] = img;
-      persistCover(book, img);
-      return img;
-    }
-  } catch(e) { /* fall through to Open Library */ }
+  } catch(e) {}
 
-  // 2. Fallback: Open Library covers API
-  try {
-    const q = encodeURIComponent(`${book.title} ${book.author}`);
-    const search = await fetch(`https://openlibrary.org/search.json?q=${q}&fields=cover_i&limit=3`);
-    const data = await search.json();
-    const coverId = data.docs?.find(d => d.cover_i)?.cover_i;
-    if (coverId) {
-      const img = `https://covers.openlibrary.org/b/id/${coverId}-M.jpg`;
-      coverCache[cacheKey] = img;
-      persistCover(book, img);
-      return img;
-    }
-  } catch(e) { /* give up */ }
+  // 2. Fallback: Open Library
+  if (!img) {
+    try {
+      const q = encodeURIComponent(`${title} ${author}`);
+      const res = await fetch(`https://openlibrary.org/search.json?q=${q}&fields=cover_i&limit=3`);
+      const data = await res.json();
+      const coverId = data.docs?.find(d => d.cover_i)?.cover_i;
+      if (coverId) img = `https://covers.openlibrary.org/b/id/${coverId}-M.jpg`;
+    } catch(e) {}
+  }
 
-  return null;
+  if (img && canonicalId) {
+    await sb.from('canonical_books').update({ cover_url: img }).eq('id', canonicalId);
+    // Update local cache
+    const key = canonicalKey(title, author);
+    if (coverCache[key]) coverCache[key].cover_url = img;
+    // Update any matching user books in memory
+    books.filter(b => b.canonical_book_id === canonicalId).forEach(b => b.cover_url = img);
+  }
+
+  return img;
 }
 
-function persistCover(book, url) {
-  if (!book.id) return;
-  sb.from('books').update({ cover_url: url }).eq('id', book.id);
-  const b = books.find(b => b.id === book.id);
-  if (b) b.cover_url = url;
+async function fetchCoverUrl(book) {
+  // Already have it
+  if (book.cover_url) return book.cover_url;
+
+  // Resolve canonical (get or create)
+  const canonical = await resolveCanonical(book.title, book.author);
+  if (!canonical) return null;
+
+  // Link user book to canonical if not already
+  if (book.id && book.canonical_book_id !== canonical.id) {
+    book.canonical_book_id = canonical.id;
+    sb.from('books').update({ canonical_book_id: canonical.id }).eq('id', book.id);
+  }
+
+  // Canonical already has a cover
+  if (canonical.cover_url) {
+    book.cover_url = canonical.cover_url;
+    if (book.id) sb.from('books').update({ cover_url: canonical.cover_url }).eq('id', book.id);
+    return canonical.cover_url;
+  }
+
+  // Need to fetch cover
+  const img = await fetchAndSaveCover(canonical.id, book.title, book.author);
+  if (img) {
+    book.cover_url = img;
+    if (book.id) sb.from('books').update({ cover_url: img }).eq('id', book.id);
+  }
+  return img || null;
 }
 
 function renderCoverEl(containerId, book) {
@@ -619,16 +675,78 @@ async function doImport(skipExistingCheck) {
   const toInsert = csvBooks
     .filter(b => skipExistingCheck || !existingTitles.has(b.title.toLowerCase()))
     .map(b => ({ user_id: userId, title: b.title, author: b.author, storygraph_rating: b.storygraph_rating, elo: 1500, battles: 0, wins: 0, streak: 0, placement_battles: PLACEMENT_BATTLES, is_placed: true }));
+
+  const newBooks = [];
   if (toInsert.length > 0) {
     for (let i = 0; i < toInsert.length; i += 50) {
       const { data, error } = await sb.from('books').insert(toInsert.slice(i, i+50)).select();
       if (error) { console.error(error); showToast('Import error: ' + error.message); continue; }
       books.push(...(data || []));
+      newBooks.push(...(data || []));
     }
   }
-  showToast(`Imported ${toInsert.length} books`);
+
+  showToast(`Imported ${newBooks.length} books — resolving library...`);
   showScreen('app');
   nextMatchup();
+
+  // Async: resolve canonicals and fetch covers for all new books
+  // Batch check existing canonicals first to minimise DB round trips
+  resolveCanonicalsBatch(newBooks);
+}
+
+async function resolveCanonicalsBatch(newBooks) {
+  if (!newBooks.length) return;
+
+  // 1. Fetch all existing canonical rows matching our titles+authors in one query
+  const keys = newBooks.map(b => canonicalKey(b.title, b.author));
+  const { data: existing } = await sb.from('canonical_books')
+    .select('id, title, author, cover_url, title_author_key')
+    .in('title_author_key', keys);
+
+  const existingMap = {};
+  (existing || []).forEach(c => { existingMap[c.title_author_key] = c; });
+
+  // 2. Insert missing canonical rows in bulk
+  const missing = newBooks.filter(b => !existingMap[canonicalKey(b.title, b.author)]);
+  if (missing.length > 0) {
+    const toInsert = missing.map(b => ({ title: b.title, author: b.author }));
+    for (let i = 0; i < toInsert.length; i += 50) {
+      const { data: inserted } = await sb.from('canonical_books')
+        .upsert(toInsert.slice(i, i+50), { onConflict: 'title_author_key', ignoreDuplicates: false })
+        .select('id, title, author, cover_url, title_author_key');
+      (inserted || []).forEach(c => { existingMap[c.title_author_key] = c; });
+    }
+  }
+
+  // 3. Link each user book to its canonical ID + copy over any existing cover
+  const bookUpdates = [];
+  for (const book of newBooks) {
+    const canonical = existingMap[canonicalKey(book.title, book.author)];
+    if (!canonical) continue;
+    book.canonical_book_id = canonical.id;
+    if (canonical.cover_url) book.cover_url = canonical.cover_url;
+    bookUpdates.push({ id: book.id, canonical_book_id: canonical.id, cover_url: canonical.cover_url || null });
+    coverCache[canonicalKey(book.title, book.author)] = canonical;
+  }
+
+  // Batch update user books with canonical IDs
+  for (const upd of bookUpdates) {
+    sb.from('books').update({ canonical_book_id: upd.canonical_book_id, cover_url: upd.cover_url })
+      .eq('id', upd.id);
+  }
+
+  // 4. Fetch covers for canonical rows that don't have one yet (rate-limited, sequential)
+  const needsCovers = newBooks
+    .map(b => existingMap[canonicalKey(b.title, b.author)])
+    .filter(c => c && !c.cover_url)
+    .filter((c, i, arr) => arr.findIndex(x => x.id === c.id) === i); // dedupe
+
+  for (const canonical of needsCovers) {
+    await fetchAndSaveCover(canonical.id, canonical.title, canonical.author);
+    // Small delay to be kind to the API
+    await new Promise(r => setTimeout(r, 150));
+  }
 }
 
 function skipImport() { showScreen('app'); nextMatchup(); }
