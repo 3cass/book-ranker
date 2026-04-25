@@ -201,6 +201,29 @@
   .place-now-btn { font-family:'IBM Plex Mono',monospace; font-size:0.58rem; letter-spacing:0.06em; text-transform:uppercase; padding:4px 10px; border:1px solid #b8a030; background:transparent; color:#7a6010; cursor:pointer; }
 
   .saving-dot { width:6px; height:6px; border-radius:50%; background:var(--paper-dark); transition:background 0.3s; flex-shrink:0; }
+
+  /* Rankings view toggle */
+  .view-toggle { display:flex; gap:0; margin-bottom:16px; border:1px solid var(--border); width:fit-content; }
+  .view-toggle-btn { font-family:'IBM Plex Mono',monospace; font-size:0.62rem; letter-spacing:0.06em; text-transform:uppercase; padding:6px 16px; background:transparent; border:none; color:var(--muted); cursor:pointer; transition:all 0.15s; }
+  .view-toggle-btn.active { background:var(--ink); color:var(--paper); }
+
+  /* Author sort toggle */
+  .author-sort-row { display:flex; gap:6px; margin-bottom:14px; align-items:center; }
+  .author-sort-label { font-size:0.58rem; color:var(--muted); letter-spacing:0.06em; text-transform:uppercase; }
+  .author-sort-btn { font-family:'IBM Plex Mono',monospace; font-size:0.58rem; letter-spacing:0.06em; text-transform:uppercase; padding:3px 10px; border:1px solid var(--border); background:transparent; color:var(--muted); cursor:pointer; transition:all 0.12s; }
+  .author-sort-btn.active { background:var(--ink); color:var(--paper); border-color:var(--ink); }
+
+  /* Author row */
+  .author-row { display:grid; grid-template-columns:28px 1fr auto; gap:10px; align-items:center; padding:10px 0; border-bottom:1px solid var(--paper-mid); }
+  .author-row:hover { background:rgba(0,0,0,0.015); }
+  .author-name { font-family:'Playfair Display',serif; font-size:0.92rem; font-weight:700; color:#0f0b08; }
+  .author-top-book { font-size:0.62rem; color:var(--muted); margin-top:2px; }
+  .author-book-count { font-size:0.6rem; color:var(--paper-dark); }
+
+  /* Battle moment toast — more prominent than regular toast */
+  .moment-toast { position:fixed; bottom:72px; left:50%; transform:translateX(-50%) translateY(80px); background:var(--paper); border:1px solid var(--gold); color:var(--ink); padding:12px 20px; font-size:0.72rem; letter-spacing:0.03em; opacity:0; transition:all 0.4s ease; z-index:998; pointer-events:none; text-align:center; min-width:240px; max-width:320px; box-shadow:0 4px 20px rgba(0,0,0,0.12); }
+  .moment-toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+  .moment-toast-emoji { font-size:1.2rem; display:block; margin-bottom:4px; }
   .saving-dot.saving { background:var(--gold); }
   .saving-dot.saved { background:#4a9; }
 
@@ -333,12 +356,23 @@
         <button class="export-btn" onclick="exportCSV()">↓ export csv</button>
       </div>
     </div>
-    <div class="filter-row">
-      <button class="filter-btn active" onclick="setFilter('all',this)">All</button>
-      <button class="filter-btn" onclick="setFilter('battled',this)">Battled</button>
-      <button class="filter-btn" onclick="setFilter('top50',this)">Top 50</button>
-      <button class="filter-btn" onclick="setFilter('5star',this)">★ 5-star</button>
-      <button class="filter-btn" onclick="setFilter('2star',this)">≤ 2-star</button>
+    <div class="view-toggle">
+      <button class="view-toggle-btn active" id="toggle-books" onclick="setRankingsView('books')">Books</button>
+      <button class="view-toggle-btn" id="toggle-authors" onclick="setRankingsView('authors')">Authors</button>
+    </div>
+    <div id="books-controls">
+      <div class="filter-row">
+        <button class="filter-btn active" onclick="setFilter('all',this)">All</button>
+        <button class="filter-btn" onclick="setFilter('5star',this)">★ 5-star</button>
+        <button class="filter-btn" onclick="setFilter('2star',this)">≤ 2-star</button>
+      </div>
+    </div>
+    <div id="authors-controls" style="display:none;">
+      <div class="author-sort-row">
+        <span class="author-sort-label">Sort by</span>
+        <button class="author-sort-btn active" id="sort-avg" onclick="setAuthorSort('avg',this)">Avg Elo</button>
+        <button class="author-sort-btn" id="sort-total" onclick="setAuthorSort('total',this)">Total Elo</button>
+      </div>
     </div>
     <div id="rankings-list"></div>
   </div>
@@ -404,6 +438,7 @@
 </div>
 
 <div class="toast" id="toast"></div>
+<div class="moment-toast" id="moment-toast"><span class="moment-toast-emoji" id="moment-emoji"></span><span id="moment-text"></span></div>
 
 <script>
 const SUPABASE_URL = 'https://cktqqaxjshzzyrphcfke.supabase.co';
@@ -951,6 +986,60 @@ function nextMatchup() {
   vs.textContent=elite?'VS':'vs';
 }
 
+// ── BATTLE MOMENTS ────────────────────────────────────────────────────
+let prevRanks = {};
+
+function captureRanks() {
+  const sorted = [...books].filter(b=>b.is_placed).sort((a,b)=>b.elo-a.elo);
+  const ranks = {};
+  sorted.forEach((b,i) => ranks[b.id] = i+1);
+  return ranks;
+}
+
+function checkMoments(winnerId, loserId) {
+  const sorted = [...books].filter(b=>b.is_placed).sort((a,b)=>b.elo-a.elo);
+  const newRanks = {};
+  sorted.forEach((b,i) => newRanks[b.id] = i+1);
+
+  const w = books.find(b=>b.id===winnerId);
+  const l = books.find(b=>b.id===loserId);
+  const wPrev = prevRanks[winnerId] || newRanks[winnerId];
+  const wNew = newRanks[winnerId];
+  const lPrev = prevRanks[loserId] || newRanks[loserId];
+  const wEloDiff = w.elo - (prevRanks[winnerId+'_elo'] || w.elo);
+
+  // Priority order — only show one moment at a time
+  // Upset: beat a book rated much higher
+  if (l && prevRanks[loserId+'_elo'] && (prevRanks[loserId+'_elo'] - (prevRanks[winnerId+'_elo']||w.elo)) >= 150) {
+    showMoment('😲', `Upset! "${w.title}" beat a higher-ranked book`);
+  }
+  // Streak milestones
+  else if (w.streak === 5) { showMoment('🔥', `"${w.title}" is on a 5-win streak!`); }
+  else if (w.streak === 10) { showMoment('🔥🔥', `"${w.title}" is on a 10-win streak!`); }
+  // Entered top 10
+  else if (wNew <= 10 && wPrev > 10) { showMoment('⭐', `"${w.title}" just entered your top 10!`); }
+  // Entered top 25
+  else if (wNew <= 25 && wPrev > 25) { showMoment('📈', `"${w.title}" just broke into your top 25`); }
+  // New #1
+  else if (wNew === 1 && wPrev !== 1) { showMoment('👑', `"${w.title}" is your new #1!`); }
+  // Knocked out of top 10
+  else if (newRanks[loserId] > 10 && lPrev <= 10) { showMoment('📉', `"${l.title}" just fell out of your top 10`); }
+
+  // Save current state for next comparison
+  prevRanks = {...newRanks};
+  books.forEach(b => prevRanks[b.id+'_elo'] = b.elo);
+}
+
+let momentTimeout = null;
+function showMoment(emoji, text) {
+  const t = document.getElementById('moment-toast');
+  document.getElementById('moment-emoji').textContent = emoji;
+  document.getElementById('moment-text').textContent = text;
+  t.classList.add('show');
+  clearTimeout(momentTimeout);
+  momentTimeout = setTimeout(() => t.classList.remove('show'), 3500);
+}
+
 async function pick(side) {
   const winnerId=side==='a'?currentA.id:currentB.id, loserId=side==='a'?currentB.id:currentA.id;
   const w=books.find(b=>b.id===winnerId), l=books.find(b=>b.id===loserId);
@@ -958,7 +1047,10 @@ async function pick(side) {
   document.getElementById('undo-btn').disabled=false;
   document.getElementById('card-'+side).classList.add('winner');
   document.getElementById('card-'+(side==='a'?'b':'a')).classList.add('loser');
+  prevRanks = captureRanks();
+  books.forEach(b => prevRanks[b.id+'_elo'] = b.elo);
   applyElo(winnerId,loserId);
+  checkMoments(winnerId,loserId);
   comparisons++;
   updateStats();
   maybeShowEmailPrompt();
@@ -1227,12 +1319,31 @@ function updateAccountIndicator() {
 }
 
 // ── RANKINGS ──────────────────────────────────────────────────────────
+let rankingsView = 'books'; // 'books' | 'authors'
+let authorSort = 'avg';     // 'avg' | 'total'
+
 function showView(v) {
   document.getElementById('battle-view').style.display=v==='battle'?'flex':'none';
   document.getElementById('rankings-view').style.display=v==='rankings'?'block':'none';
   document.getElementById('btn-battle').classList.toggle('active',v==='battle');
   document.getElementById('btn-rankings').classList.toggle('active',v==='rankings');
   if (v==='rankings') renderRankings();
+}
+
+function setRankingsView(v) {
+  rankingsView = v;
+  document.getElementById('toggle-books').classList.toggle('active', v==='books');
+  document.getElementById('toggle-authors').classList.toggle('active', v==='authors');
+  document.getElementById('books-controls').style.display = v==='books' ? 'block' : 'none';
+  document.getElementById('authors-controls').style.display = v==='authors' ? 'block' : 'none';
+  renderRankings();
+}
+
+function setAuthorSort(s, btn) {
+  authorSort = s;
+  document.querySelectorAll('.author-sort-btn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  renderRankings();
 }
 
 function starsHtml(r) {
@@ -1248,11 +1359,11 @@ function setFilter(f,btn) {
 }
 
 function renderRankings() {
+  if (rankingsView === 'authors') { renderAuthors(); return; }
+
   const sorted=[...books].filter(b=>b.is_placed).sort((a,b)=>b.elo-a.elo);
   let filtered=sorted;
-  if (currentFilter==='battled') filtered=sorted.filter(b=>b.battles>0);
-  else if (currentFilter==='top50') filtered=sorted.slice(0,50);
-  else if (currentFilter==='5star') filtered=sorted.filter(b=>b.storygraph_rating===5);
+  if (currentFilter==='5star') filtered=sorted.filter(b=>b.storygraph_rating===5);
   else if (currentFilter==='2star') filtered=sorted.filter(b=>b.storygraph_rating!==null&&b.storygraph_rating<=2);
   const rankMap={};
   sorted.forEach((b,i)=>rankMap[b.id]=i+1);
@@ -1270,6 +1381,48 @@ function renderRankings() {
     </div>`;
   }).join('');
   document.getElementById('rankings-subtitle').textContent=`${filtered.length} books · sorted by elo`;
+}
+
+function renderAuthors() {
+  const placed = books.filter(b => b.is_placed && b.battles > 0);
+
+  // Group by author
+  const authorMap = {};
+  for (const book of placed) {
+    const a = book.author;
+    if (!authorMap[a]) authorMap[a] = [];
+    authorMap[a].push(book);
+  }
+
+  // Build author stats
+  const authors = Object.entries(authorMap).map(([author, bks]) => {
+    const avgElo = Math.round(bks.reduce((s,b)=>s+b.elo,0) / bks.length);
+    const totalElo = bks.reduce((s,b)=>s+b.elo,0);
+    const topBook = [...bks].sort((a,b)=>b.elo-a.elo)[0];
+    return { author, avgElo, totalElo, bookCount: bks.length, topBook };
+  });
+
+  // Sort
+  authors.sort((a,b) => authorSort==='avg' ? b.avgElo-a.avgElo : b.totalElo-a.totalElo);
+
+  document.getElementById('rankings-list').innerHTML = authors.map((a, i) => {
+    const rank = i + 1;
+    const score = authorSort === 'avg' ? a.avgElo : a.totalElo;
+    return `<div class="author-row">
+      <div class="rank-num ${rank<=3?'top3':''}">${rank}</div>
+      <div>
+        <div class="author-name">${a.author}</div>
+        <div class="author-top-book">Top: ${a.topBook.title}</div>
+      </div>
+      <div class="row-meta">
+        <div class="elo-score">${score}</div>
+        <div class="author-book-count">${a.bookCount} book${a.bookCount!==1?'s':''}</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  document.getElementById('rankings-subtitle').textContent =
+    `${authors.length} authors · sorted by ${authorSort === 'avg' ? 'avg' : 'total'} elo`;
 }
 
 function runGauntlet(bookId) {
