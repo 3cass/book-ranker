@@ -410,7 +410,11 @@ const SUPABASE_URL = 'https://cktqqaxjshzzyrphcfke.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrdHFxYXhqc2h6enlycGhjZmtlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY4Mjg3MTcsImV4cCI6MjA5MjQwNDcxN30.qqYUudQG4c2fzMiQFqpXqnSiDYenypcK2lHS1HdfcOA';
 const PLACEMENT_BATTLES = 8;
 const TARGET = 1200;
-const K = 32;
+function getK(book) {
+  if (book.battles < 9) return 32;
+  if (book.battles < 21) return 20;
+  return 12;
+}
 const GOOGLE_BOOKS_KEY = ''; // optional — works without it at lower rate limits
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
@@ -799,8 +803,10 @@ function applyElo(winnerId, loserId) {
   const w = books.find(b => b.id === winnerId);
   const l = books.find(b => b.id === loserId);
   const eW = expectedScore(w.elo, l.elo);
-  w.elo = Math.round(w.elo + K*(1-eW));
-  l.elo = Math.round(l.elo + K*(0-eW));
+  const kW = getK(w);
+  const kL = getK(l);
+  w.elo = Math.round(w.elo + kW*(1-eW));
+  l.elo = Math.round(l.elo + kL*(0-eW));
   w.battles++; l.battles++; w.wins++;
   w.streak = (w.streak||0)+1; l.streak = 0;
   return { w, l };
@@ -1042,8 +1048,9 @@ async function placementPick(side) {
   const placingWins=side===newSide;
   const wElo=placingWins?placingBook.elo:opp.elo, lElo=placingWins?opp.elo:placingBook.elo;
   const eW=expectedScore(wElo,lElo);
-  if (placingWins) { placingBook.elo=Math.round(wElo+K*(1-eW)); placingBook.wins++; opp.elo=Math.round(lElo+K*(0-eW)); }
-  else { placingBook.elo=Math.round(lElo+K*(0-eW)); opp.elo=Math.round(wElo+K*(1-eW)); opp.wins++; }
+  const kP=getK(placingBook); const kO=getK(opp);
+  if (placingWins) { placingBook.elo=Math.round(wElo+kP*(1-eW)); placingBook.wins++; opp.elo=Math.round(lElo+kO*(0-eW)); }
+  else { placingBook.elo=Math.round(lElo+kP*(0-eW)); opp.elo=Math.round(wElo+kO*(1-eW)); opp.wins++; }
   placingBook.battles++; opp.battles++;
   await sb.from('books').update({elo:opp.elo,battles:opp.battles,wins:opp.wins}).eq('id',opp.id);
   placementBattlesDone++;
@@ -1257,9 +1264,8 @@ function renderRankings() {
       <div class="row-meta">
         <div class="elo-score">${book.elo}</div>
         <div class="star-rating">${starsHtml(book.storygraph_rating)}</div>
-        <div class="battles-count">${book.battles} battle${book.battles!==1?'s':''}</div>
+        <div style="display:flex;align-items:center;gap:4px;"><div class="battles-count">${book.battles} battle${book.battles!==1?'s':''}</div><button class="gauntlet-btn" onclick="runGauntlet('${book.id}')" title="Run gauntlet">⚔</button></div>
         <div class="confidence-bar"><div class="confidence-fill" style="width:${Math.min(100,(book.battles/10)*100)}%"></div></div>
-        <button class="gauntlet-btn" onclick="runGauntlet('${book.id}')" title="Run gauntlet">⚔</button>
       </div>
     </div>`;
   }).join('');
