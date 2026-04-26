@@ -1394,13 +1394,15 @@ function renderAuthors() {
     authorMap[a].push(book);
   }
 
-  // Build author stats
-  const authors = Object.entries(authorMap).map(([author, bks]) => {
-    const avgElo = Math.round(bks.reduce((s,b)=>s+b.elo,0) / bks.length);
-    const totalElo = bks.reduce((s,b)=>s+b.elo,0);
-    const topBook = [...bks].sort((a,b)=>b.elo-a.elo)[0];
-    return { author, avgElo, totalElo, bookCount: bks.length, topBook };
-  });
+  // Build author stats — min 3 books to be meaningful
+  const authors = Object.entries(authorMap)
+    .filter(([, bks]) => bks.length >= 3)
+    .map(([author, bks]) => {
+      const avgElo = Math.round(bks.reduce((s,b)=>s+b.elo,0) / bks.length);
+      const totalElo = bks.reduce((s,b)=>s+b.elo,0);
+      const topBook = [...bks].sort((a,b)=>b.elo-a.elo)[0];
+      return { author, avgElo, totalElo, bookCount: bks.length, topBook };
+    });
 
   // Sort
   authors.sort((a,b) => authorSort==='avg' ? b.avgElo-a.avgElo : b.totalElo-a.totalElo);
@@ -1422,7 +1424,7 @@ function renderAuthors() {
   }).join('');
 
   document.getElementById('rankings-subtitle').textContent =
-    `${authors.length} authors · sorted by ${authorSort === 'avg' ? 'avg' : 'total'} elo`;
+    `${authors.length} authors with 3+ books · sorted by ${authorSort === 'avg' ? 'avg' : 'total'} elo`;
 }
 
 function runGauntlet(bookId) {
