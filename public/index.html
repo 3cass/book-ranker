@@ -229,6 +229,18 @@
 
   .account-indicator { font-size:0.58rem; color:var(--muted); letter-spacing:0.04em; }
   .account-indicator.linked { color:#4a9; }
+
+  /* Edit mode */
+  .edit-mode-btn { font-family:'IBM Plex Mono',monospace; font-size:0.6rem; letter-spacing:0.06em; text-transform:uppercase; padding:5px 12px; border:1px solid var(--border); background:transparent; color:var(--muted); cursor:pointer; transition:all 0.15s; }
+  .edit-mode-btn.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .exclude-btn { font-size:0.75rem; background:none; border:none; cursor:pointer; opacity:0.35; transition:opacity 0.15s; padding:2px 4px; line-height:1; }
+  .exclude-btn:hover { opacity:1; }
+  .restore-btn { font-family:'IBM Plex Mono',monospace; font-size:0.58rem; letter-spacing:0.05em; text-transform:uppercase; background:none; border:1px solid var(--border); color:var(--muted); cursor:pointer; padding:3px 8px; transition:all 0.15s; }
+  .restore-btn:hover { border-color:var(--accent); color:var(--accent); }
+  .book-row.excluded-row { opacity:0.45; }
+  .inline-confirm { font-size:0.62rem; display:flex; gap:6px; align-items:center; margin-top:4px; }
+  .inline-confirm-yes { font-family:'IBM Plex Mono',monospace; font-size:0.58rem; letter-spacing:0.05em; padding:3px 8px; background:var(--accent); color:#fff; border:none; cursor:pointer; }
+  .inline-confirm-no { font-family:'IBM Plex Mono',monospace; font-size:0.58rem; letter-spacing:0.05em; padding:3px 8px; background:none; border:1px solid var(--border); color:var(--muted); cursor:pointer; }
 </style>
 </head>
 <body>
@@ -361,10 +373,14 @@
       <button class="view-toggle-btn" id="toggle-authors" onclick="setRankingsView('authors')">Authors</button>
     </div>
     <div id="books-controls">
-      <div class="filter-row">
-        <button class="filter-btn active" onclick="setFilter('all',this)">All</button>
-        <button class="filter-btn" onclick="setFilter('5star',this)">★ 5-star</button>
-        <button class="filter-btn" onclick="setFilter('2star',this)">≤ 2-star</button>
+      <div class="filter-row" style="justify-content:space-between;align-items:center;">
+        <div style="display:flex;gap:6px;">
+          <button class="filter-btn active" onclick="setFilter('all',this)">All</button>
+          <button class="filter-btn" onclick="setFilter('5star',this)">★ 5-star</button>
+          <button class="filter-btn" onclick="setFilter('2star',this)">≤ 2-star</button>
+          <button class="filter-btn" id="filter-excluded-btn" onclick="setFilter('excluded',this)">Excluded</button>
+        </div>
+        <button class="edit-mode-btn" id="edit-mode-btn" onclick="toggleEditMode()">Edit</button>
       </div>
     </div>
     <div id="authors-controls" style="display:none;">
@@ -716,7 +732,7 @@ async function doImport(skipExistingCheck) {
   const existingTitles = new Set(books.map(b => b.title.toLowerCase()));
   const toInsert = csvBooks
     .filter(b => skipExistingCheck || !existingTitles.has(b.title.toLowerCase()))
-    .map(b => ({ user_id: userId, title: b.title, author: b.author, storygraph_rating: b.storygraph_rating, elo: 1500, battles: 0, wins: 0, streak: 0, placement_battles: PLACEMENT_BATTLES, is_placed: true }));
+    .map(b => ({ user_id: userId, title: b.title, author: b.author, storygraph_rating: b.storygraph_rating, elo: 1500, battles: 0, wins: 0, streak: 0, placement_battles: PLACEMENT_BATTLES, is_placed: true, excluded: false }));
 
   const newBooks = [];
   if (toInsert.length > 0) {
@@ -902,7 +918,7 @@ function weightedPick(pool, weights, excludeId) {
 }
 
 function pickMatchup() {
-  const pool = books.filter(b => b.is_placed);
+  const pool = books.filter(b => b.is_placed && !b.excluded);
   if (pool.length < 2) return [null, null];
 
   const maxBattles = Math.max(...pool.map(b => b.battles), 1);
@@ -1244,7 +1260,7 @@ async function addManualBook() {
 async function addBookToLibrary(bookData) {
   if (books.some(b=>b.title.toLowerCase()===bookData.title.toLowerCase())) { showToast('Already in your library'); return; }
   const isPlaced=books.filter(b=>b.is_placed).length<2;
-  const newBook={user_id:userId,title:bookData.title,author:bookData.author,open_library_key:bookData.open_library_key||null,cover_url:bookData.cover_url||null,elo:1500,battles:0,wins:0,streak:0,placement_battles:0,is_placed:isPlaced};
+  const newBook={user_id:userId,title:bookData.title,author:bookData.author,open_library_key:bookData.open_library_key||null,cover_url:bookData.cover_url||null,elo:1500,battles:0,wins:0,streak:0,placement_battles:0,is_placed:isPlaced,excluded:false};
   const {data,error}=await sb.from('books').insert(newBook).select().single();
   if (error) { showToast(error.message||'DB error'); console.error(error); return; }
   books.push(data);
@@ -1358,29 +1374,96 @@ function setFilter(f,btn) {
   renderRankings();
 }
 
+let editMode = false;
+let confirmingExcludeId = null;
+
+function toggleEditMode() {
+  editMode = !editMode;
+  const btn = document.getElementById('edit-mode-btn');
+  btn.textContent = editMode ? 'Done' : 'Edit';
+  btn.classList.toggle('active', editMode);
+  confirmingExcludeId = null;
+  renderRankings();
+}
+
 function renderRankings() {
   if (rankingsView === 'authors') { renderAuthors(); return; }
 
-  const sorted=[...books].filter(b=>b.is_placed).sort((a,b)=>b.elo-a.elo);
-  let filtered=sorted;
-  if (currentFilter==='5star') filtered=sorted.filter(b=>b.storygraph_rating===5);
-  else if (currentFilter==='2star') filtered=sorted.filter(b=>b.storygraph_rating!==null&&b.storygraph_rating<=2);
-  const rankMap={};
-  sorted.forEach((b,i)=>rankMap[b.id]=i+1);
-  document.getElementById('rankings-list').innerHTML=filtered.map(book=>{
-    const rank=rankMap[book.id];
-    return `<div class="book-row">
-      <div class="rank-num ${rank<=3?'top3':''}">${rank}</div>
+  const allPlaced = [...books].filter(b => b.is_placed);
+  const sorted = allPlaced.filter(b => !b.excluded).sort((a,b) => b.elo-a.elo);
+  const excluded = allPlaced.filter(b => b.excluded);
+
+  let filtered = sorted;
+  if (currentFilter === '5star') filtered = sorted.filter(b => b.storygraph_rating===5);
+  else if (currentFilter === '2star') filtered = sorted.filter(b => b.storygraph_rating!==null && b.storygraph_rating<=2);
+  else if (currentFilter === 'excluded') filtered = excluded;
+
+  const rankMap = {};
+  sorted.forEach((b,i) => rankMap[b.id] = i+1);
+
+  const isExcludedView = currentFilter === 'excluded';
+
+  document.getElementById('rankings-list').innerHTML = filtered.map(book => {
+    const rank = rankMap[book.id] || '—';
+    const isConfirming = confirmingExcludeId === book.id;
+    const actionBtn = isExcludedView
+      ? `<button class="restore-btn" onclick="restoreBook('${book.id}')">restore</button>`
+      : editMode
+        ? isConfirming
+          ? `<div class="inline-confirm"><span style="font-size:0.6rem;color:var(--muted);">Exclude?</span><button class="inline-confirm-yes" onclick="excludeBook('${book.id}')">Yes</button><button class="inline-confirm-no" onclick="cancelConfirm()">No</button></div>`
+          : `<button class="exclude-btn" onclick="confirmExclude('${book.id}')" title="Exclude book">⛔</button>`
+        : `<button class="gauntlet-btn" onclick="runGauntlet('${book.id}')" title="Run gauntlet">⚔</button>`;
+
+    return `<div class="book-row${isExcludedView?' excluded-row':''}">
+      <div class="rank-num ${typeof rank==='number'&&rank<=3?'top3':''}">${rank}</div>
       <div><div class="row-title">${book.title}</div><div class="row-author">${book.author}</div></div>
       <div class="row-meta">
-        <div class="elo-score">${book.elo}</div>
+        ${!isExcludedView ? `<div class="elo-score">${book.elo}</div>` : ''}
         <div class="star-rating">${starsHtml(book.storygraph_rating)}</div>
-        <div style="display:flex;align-items:center;gap:4px;"><div class="battles-count">${book.battles} battle${book.battles!==1?'s':''}</div><button class="gauntlet-btn" onclick="runGauntlet('${book.id}')" title="Run gauntlet">⚔</button></div>
-        <div class="confidence-bar"><div class="confidence-fill" style="width:${Math.min(100,(book.battles/10)*100)}%"></div></div>
+        <div style="display:flex;align-items:center;gap:4px;"><div class="battles-count">${book.battles} battle${book.battles!==1?'s':''}</div>${!isConfirming ? actionBtn : ''}</div>
+        ${isConfirming ? actionBtn : ''}
+        ${!isExcludedView ? `<div class="confidence-bar"><div class="confidence-fill" style="width:${Math.min(100,(book.battles/10)*100)}%"></div></div>` : ''}
       </div>
     </div>`;
   }).join('');
-  document.getElementById('rankings-subtitle').textContent=`${filtered.length} books · sorted by elo`;
+
+  const label = isExcludedView
+    ? `${filtered.length} excluded books`
+    : `${filtered.length} books · sorted by elo`;
+  document.getElementById('rankings-subtitle').textContent = label;
+}
+
+function confirmExclude(bookId) {
+  confirmingExcludeId = bookId;
+  renderRankings();
+}
+
+function cancelConfirm() {
+  confirmingExcludeId = null;
+  renderRankings();
+}
+
+async function excludeBook(bookId) {
+  const book = books.find(b => b.id === bookId);
+  if (!book) return;
+  book.excluded = true;
+  confirmingExcludeId = null;
+  await sb.from('books').update({ excluded: true }).eq('id', bookId);
+  // If this book is currently in the battle pair, skip to next
+  if (currentA?.id === bookId || currentB?.id === bookId) nextMatchup();
+  showToast(`"${book.title}" excluded`);
+  renderRankings();
+  updateStats();
+}
+
+async function restoreBook(bookId) {
+  const book = books.find(b => b.id === bookId);
+  if (!book) return;
+  book.excluded = false;
+  await sb.from('books').update({ excluded: false }).eq('id', bookId);
+  showToast(`"${book.title}" restored`);
+  renderRankings();
+  updateStats();
 }
 
 function renderAuthors() {
@@ -1451,7 +1534,7 @@ function exportCSV() {
 
 // ── STATS / UI ────────────────────────────────────────────────────────
 function updateStats() {
-  const placed=books.filter(b=>b.is_placed);
+  const placed=books.filter(b=>b.is_placed&&!b.excluded);
   document.getElementById('stat-comparisons').textContent=comparisons.toLocaleString();
   document.getElementById('stat-books').textContent=placed.length;
   document.getElementById('stat-ranked').textContent=placed.filter(b=>b.battles>0).length;
