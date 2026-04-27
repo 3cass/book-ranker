@@ -22,7 +22,6 @@
   .spinner { width:24px; height:24px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin 0.8s linear infinite; }
   @keyframes spin { to { transform:rotate(360deg); } }
 
- 
   /* ONBOARDING */
   #onboarding-screen { flex:1; display:none; flex-direction:column; align-items:center; justify-content:center; padding:40px 24px; gap:28px; max-width:540px; margin:0 auto; width:100%; }
   .onboarding-title { font-family:'Playfair Display',serif; font-size:2rem; font-weight:700; text-align:center; line-height:1.2; }
@@ -1114,10 +1113,10 @@ function checkPlacementQueue() {
 }
 
 function startNextPlacement() {
-  const unplaced=books.filter(b=>!b.is_placed);
+  const unplaced=books.filter(b=>!b.is_placed&&!b.excluded);
   if (!unplaced.length) return;
   placingBook=unplaced[0]; placementBattlesDone=0;
-  const placed=books.filter(b=>b.is_placed&&b.id!==placingBook.id);
+  const placed=books.filter(b=>b.is_placed&&!b.excluded&&b.id!==placingBook.id);
   placementOpponents=selectPlacementOpponents(placed,PLACEMENT_BATTLES);
   showScreen('placement');
   document.getElementById('placement-book-name').textContent=placingBook.title;
@@ -1516,7 +1515,7 @@ function runGauntlet(bookId) {
   if (!book) return;
   placingBook = book;
   placementBattlesDone = 0;
-  const placed = books.filter(b => b.is_placed && b.id !== book.id);
+  const placed = books.filter(b => b.is_placed && !b.excluded && b.id !== book.id);
   placementOpponents = selectPlacementOpponents(placed, PLACEMENT_BATTLES);
   showScreen('placement');
   document.getElementById('placement-book-name').textContent = book.title;
